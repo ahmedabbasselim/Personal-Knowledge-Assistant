@@ -144,15 +144,17 @@ async def verify_code(
         session_string = client.session.save()
 
         db = _get_db()
-        existing = db.find_telegram_credentials(phone_number)
         if user_id is None:
             raise RuntimeError("user_id is required to save Telegram credentials.")
-        db.save_telegram_credentials(
-            user_id,
-            phone_number,
-            telegram_user_id=me.id,
-            session_string=session_string,
-        )
+        with db.session_context() as session:
+            existing = db.find_telegram_credentials(session, phone_number)
+            db.save_telegram_credentials(
+                session,
+                user_id,
+                phone_number,
+                telegram_user_id=me.id,
+                session_string=session_string,
+            )
 
         return AuthVerifyResult(
             phone_number=phone_number,
@@ -169,10 +171,11 @@ async def verify_code(
 def get_session_string(phone_number: str) -> str:
     """Retrieve a stored session string for a phone number, or raise."""
     db = _get_db()
-    cred = db.find_telegram_credentials(phone_number)
-    if cred is None:
-        raise RuntimeError(
-            f"No saved Telegram session for {phone_number}. "
-            "Run the auth flow first."
-        )
-    return cred.session_string
+    with db.session_context() as session:
+        cred = db.find_telegram_credentials(session, phone_number)
+        if cred is None:
+            raise RuntimeError(
+                f"No saved Telegram session for {phone_number}. "
+                "Run the auth flow first."
+            )
+        return cred.session_string

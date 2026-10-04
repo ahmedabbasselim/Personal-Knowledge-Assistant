@@ -46,6 +46,10 @@ class EmailLoaderFetchError(EmailLoaderError):
     """Raised when a loader fails to fetch or parse one or more emails."""
 
 
+class EmailLoaderAuthRevokedError(EmailLoaderConnectionError):
+    """Raised when the OAuth refresh token has been permanently revoked (invalid_grant)."""
+
+
 class EmailLoader(ABC):
     """
     Abstract base class for email loaders.

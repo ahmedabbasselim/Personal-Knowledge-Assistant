@@ -11,8 +11,10 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from pwdlib import PasswordHash
+from sqlalchemy.orm import Session
 
 from config import settings
+from initializer import db
 
 logger = logging.getLogger(__name__)
 
@@ -105,25 +107,23 @@ def verify_access_token(token: str) -> int:
         return int(sub)  # Return the user id (subject) from the token payload.
 
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
+def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(db.get_session)):
     """Dependency that verifies the JWT and returns the authenticated user.
 
     Raises 401 if the token is invalid/expired/revoked.
     Raises 404 if the user no longer exists in the database.
     """
-    from initializer import db
-
     try:
         user_id = verify_access_token(token)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc)) from exc
 
-    user = db.find_user_by_id(user_id)
+    user = db.find_user_by_id(session, user_id)
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found."
         )
     return user

@@ -18,11 +18,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
 from services.app_auth_service import get_current_user
 
 from initializer import db, embedder, store, dispatcher, chunker
-from loaders.slack_loader import SlackLoader, get_slack_loader_for_team
+from loaders.slack_loader import get_slack_loader_for_team
 from models import SlackMessage
 from rag.pipeline import Pipeline
 from rag.preprocessing.slack_cleaner import SlackCleaner, SlackCleaningConfig, deduplicate_messages
@@ -35,11 +36,11 @@ router = APIRouter(prefix="/api/v1", tags=["slack-ingest"])
 _slack_ingest_status: dict[str, dict] = {}
 
 
-def _verify_team_ownership(user_id: int, team_id: Optional[str]) -> None:
+def _verify_team_ownership(session: Session, user_id: int, team_id: Optional[str]) -> None:
     """Raise 403 if team_id is given and the authenticated user does not own it."""
     if not team_id:
         return
-    cred = db.find_slack_credentials(team_id)
+    cred = db.find_slack_credentials(session, team_id)
     if not cred or cred.user_id != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this Slack workspace.")
 
@@ -143,7 +144,8 @@ def _run_slack_ingest(
                     }
                     for m in slack_messages
                 ]
-                db.save_cleaned_messages(records, provider="slack")
+                with db.session_context() as bg_session:
+                    db.save_cleaned_messages(bg_session, records, provider="slack")
             except Exception as exc:
                 logger.warning("Failed to persist cleaned messages to DB: %s", exc)
 
@@ -175,9 +177,10 @@ def ingest_slack(
     limit_per_channel: int = Query(default=50, ge=1, le=200, description="Max messages per channel"),
     save_to_db: bool = Query(default=True, description="Persist cleaned messages to PostgreSQL"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Fetch Slack messages, clean, deduplicate, and run the RAG pipeline in the background."""
-    _verify_team_ownership(user.id, team_id)
+    _verify_team_ownership(session, user.id, team_id)
     background_tasks.add_task(_run_slack_ingest, team_id, channel_id, limit_per_channel, save_to_db)
     return {
         "status": "Slack ingestion started",
@@ -194,9 +197,10 @@ def ingest_slack(
 def slack_ingest_status(
     team_id: Optional[str] = Query(None, description="Slack team ID"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Return the current Slack ingestion progress."""
-    _verify_team_ownership(user.id, team_id)
+    _verify_team_ownership(session, user.id, team_id)
     status_key = team_id or "default"
     status = _slack_ingest_status.get(status_key)
     if not status:
@@ -211,9 +215,10 @@ def slack_ingest_status(
 def list_channels(
     team_id: Optional[str] = Query(None, description="Slack team ID"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Lists public and private channels the bot has access to."""
-    _verify_team_ownership(user.id, team_id)
+    _verify_team_ownership(session, user.id, team_id)
     try:
         loader = get_slack_loader_for_team(team_id=team_id)
         channels = loader.list_user_channels()

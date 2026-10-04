@@ -17,6 +17,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
 from services.app_auth_service import get_current_user
 
@@ -39,9 +40,9 @@ router = APIRouter(prefix="/api/v1", tags=["discord-ingest"])
 _discord_ingest_status: dict[str, dict] = {}
 
 
-def _verify_guild_ownership(user_id: int, guild_id: str) -> None:
+def _verify_guild_ownership(session: Session, user_id: int, guild_id: str) -> None:
     """Raise 403 if the authenticated user does not own this guild connection."""
-    if not db.discord_guild_owned_by_user(user_id, guild_id):
+    if not db.discord_guild_owned_by_user(session, user_id, guild_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this Discord guild.")
 
 
@@ -107,7 +108,8 @@ def _run_discord_ingest(
                     }
                     for m in discord_messages
                 ]
-                db.save_cleaned_messages(records, provider="discord")
+                with db.session_context() as bg_session:
+                    db.save_cleaned_messages(bg_session, records, provider="discord")
             except Exception as exc:
                 logger.warning("Failed to persist cleaned Discord messages to DB: %s", exc)
 
@@ -141,9 +143,10 @@ def ingest_discord(
     max_per_channel: int = Query(default=50, ge=1, le=500, description="Max messages per channel"),
     save_to_db: bool = Query(default=True, description="Persist cleaned messages to PostgreSQL"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Fetch Discord messages, clean, and run the RAG pipeline in the background."""
-    _verify_guild_ownership(user.id, guild_id)
+    _verify_guild_ownership(session, user.id, guild_id)
     background_tasks.add_task(_run_discord_ingest, guild_id, max_per_channel, save_to_db)
     return {
         "status": "Discord ingestion started",
@@ -159,9 +162,10 @@ def ingest_discord(
 def discord_ingest_status(
     guild_id: str = Query(..., description="Discord guild ID"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Return the current Discord ingestion progress."""
-    _verify_guild_ownership(user.id, guild_id)
+    _verify_guild_ownership(session, user.id, guild_id)
     status = _discord_ingest_status.get(guild_id)
     if not status:
         return {"state": "idle"}
@@ -172,10 +176,13 @@ def discord_ingest_status(
     "/discord/guilds",
     summary="List connected Discord guilds",
 )
-def list_guilds(user=Depends(get_current_user)):
+def list_guilds(
+    user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
+):
     """Lists guilds the bot is connected to for the authenticated user."""
     try:
-        user_guild_ids = set(db.list_user_discord_guild_ids(user.id))
+        user_guild_ids = set(db.list_user_discord_guild_ids(session, user.id))
         guilds = [g for g in list_connected_guilds() if g.guild_id in user_guild_ids]
         return {"guilds_count": len(guilds), "guilds": [g.model_dump() for g in guilds]}
     except DiscordIntegrationError as exc:
@@ -192,9 +199,10 @@ def list_guilds(user=Depends(get_current_user)):
 def list_channels(
     guild_id: str = Query(..., description="Discord guild ID"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Lists text channels the bot can see in a guild."""
-    _verify_guild_ownership(user.id, guild_id)
+    _verify_guild_ownership(session, user.id, guild_id)
     try:
         channels = discover_guild_channels(guild_id)
         return {

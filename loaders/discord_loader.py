@@ -272,7 +272,8 @@ def _normalize_message(
 
 def _guild_connection_exists(guild_id: str) -> bool:
     from initializer import db
-    return db.discord_guild_connection_exists(guild_id)
+    with db.session_context() as session:
+        return db.discord_guild_connection_exists(session, guild_id)
 
 
 def load_messages(
@@ -337,7 +338,8 @@ def list_connected_guilds(
     sleep_function: Callable[[float], None] = time.sleep,
 ) -> list[ConnectedGuild]:
     from initializer import db
-    guild_ids = db.list_discord_guild_ids()
+    with db.session_context() as session:
+        guild_ids = db.list_discord_guild_ids(session)
     if not guild_ids:
         return []
     headers = _bot_headers()

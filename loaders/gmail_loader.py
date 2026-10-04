@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource, build
@@ -34,7 +35,7 @@ from googleapiclient.errors import HttpError
 
 from config import settings
 from models import Attachment, Email
-from .base_email_loader import EmailLoader, EmailLoaderConnectionError, EmailLoaderFetchError
+from .base_email_loader import EmailLoader, EmailLoaderAuthRevokedError, EmailLoaderConnectionError, EmailLoaderFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +63,19 @@ class GmailLoader(EmailLoader):
         self,
         access_token: str,
         refresh_token: Optional[str] = None,
-        max_emails: int = 50,
+        token_expiry: Optional[datetime] = None,
+        max_emails: Optional[int] = 50,
         label: str = "INBOX",
+        after_timestamp: Optional[datetime] = None,
+        before_timestamp: Optional[datetime] = None,
     ) -> None:
         self.access_token = access_token
         self.refresh_token = refresh_token
+        self.token_expiry = token_expiry
         self.max_emails = max_emails
         self.label = label
+        self.after_timestamp = after_timestamp
+        self.before_timestamp = before_timestamp
 
         self._service: Optional[Resource] = None
         self._creds: Optional[Credentials] = None
@@ -102,6 +109,10 @@ class GmailLoader(EmailLoader):
                 self._service.close()
             except Exception as exc:
                 logger.debug("Error while closing Gmail service: %s", exc)
+        # Capture any token that google_auth_httplib2 refreshed mid-request
+        if self._creds is not None and self._creds.token:
+            self.access_token = self._creds.token
+            self.token_expiry = self._creds.expiry
         self._service = None
         self._creds = None
         logger.info("Disconnected from Gmail API.")
@@ -126,7 +137,6 @@ class GmailLoader(EmailLoader):
                 emails.append(email_obj)
             except Exception as exc:
                 logger.warning("Skipping message %s due to error: %s", message_id, exc)
-                continue
 
         logger.info(
             "Fetched %d/%d emails from Gmail (label=%s).",
@@ -140,8 +150,50 @@ class GmailLoader(EmailLoader):
     # Private helpers
     # ------------------------------------------------------------------
 
+    def get_current_history_id(self) -> str:
+        """Return the current mailbox historyId from users.getProfile()."""
+        if self._service is None:
+            raise EmailLoaderConnectionError("Not connected to Gmail API.")
+        profile = self._service.users().getProfile(userId="me").execute()
+        return profile["historyId"]
+
+    def fetch_new_by_history(self, history_id: str) -> tuple[List[Email], str]:
+        """Return (new_emails, new_history_id) for messages added since history_id.
+
+        Raises EmailLoaderFetchError if historyId has expired (>30 days gap).
+        """
+        if self._service is None:
+            raise EmailLoaderConnectionError("Not connected to Gmail API.")
+        try:
+            list_kwargs: Dict[str, Any] = {
+                "userId": "me",
+                "startHistoryId": history_id,
+                "historyTypes": ["messageAdded"],
+            }
+            if self.label:
+                list_kwargs["labelId"] = self.label
+            response = self._service.users().history().list(**list_kwargs).execute()
+        except HttpError as exc:
+            raise EmailLoaderFetchError(f"history.list failed: {exc}") from exc
+
+        new_history_id = response.get("historyId", history_id)
+        message_ids = [
+            msg["message"]["id"]
+            for record in response.get("history", [])
+            for msg in record.get("messagesAdded", [])
+        ]
+        emails: List[Email] = []
+        for msg_id in message_ids:
+            try:
+                emails.append(self._parse_email(msg_id, self._download_message(msg_id)))
+            except Exception as exc:
+                logger.warning("Skipping message %s: %s", msg_id, exc)
+        return emails, new_history_id
+
     def _build_credentials(self) -> Credentials:
         """Build Google credentials from stored tokens, refreshing if needed."""
+        # google-auth uses naive UTC datetimes internally; strip tzinfo if present
+        expiry = self.token_expiry.replace(tzinfo=None) if self.token_expiry is not None else None
         creds = Credentials(
             token=self.access_token,
             refresh_token=self.refresh_token,
@@ -149,13 +201,22 @@ class GmailLoader(EmailLoader):
             client_id=settings.GOOGLE_CLIENT_ID,
             client_secret=settings.GOOGLE_CLIENT_SECRET.get_secret_value(),
             scopes=DEFAULT_SCOPES,
+            expiry=expiry,
         )
 
         if not creds.valid:
             if creds.expired and creds.refresh_token:
                 logger.info("Refreshing expired Gmail token...")
-                creds.refresh(Request())
+                try:
+                    creds.refresh(Request())
+                except RefreshError as exc:
+                    if "invalid_grant" in str(exc).lower():
+                        raise EmailLoaderAuthRevokedError(
+                            "Google refresh token has been revoked (invalid_grant)."
+                        ) from exc
+                    raise EmailLoaderConnectionError(f"Token refresh failed: {exc}") from exc
                 self.access_token = creds.token
+                self.token_expiry = creds.expiry
             else:
                 raise EmailLoaderConnectionError(
                     "Access token is invalid and no refresh token is available."
@@ -165,27 +226,39 @@ class GmailLoader(EmailLoader):
 
     def _get_message_ids(self) -> List[str]:
         """Retrieve up to `max_emails` message IDs for `label`, paginating as needed."""
-        assert self._service is not None
+        if self._service is None:
+            raise EmailLoaderConnectionError("Not connected to Gmail API. Use the context manager.")
         message_ids: List[str] = []
         page_token: Optional[str] = None
 
+        parts = []
+        if self.after_timestamp:
+            parts.append(f"after:{int(self.after_timestamp.timestamp())}")
+        if self.before_timestamp:
+            parts.append(f"before:{int(self.before_timestamp.timestamp())}")
+        q = " ".join(parts) or None
         try:
-            while len(message_ids) < self.max_emails:
-                remaining = self.max_emails - len(message_ids)
+            while True:
+                batch = 500 if self.max_emails is None else min(self.max_emails - len(message_ids), 500)
+                list_kwargs: Dict[str, Any] = {
+                    "userId": "me",
+                    "labelIds": [self.label] if self.label else None,
+                    "maxResults": batch,
+                    "pageToken": page_token,
+                }
+                if q:
+                    list_kwargs["q"] = q
                 response = (
                     self._service.users()
                     .messages()
-                    .list(
-                        userId="me",
-                        labelIds=[self.label] if self.label else None,
-                        maxResults=min(remaining, 500),
-                        pageToken=page_token,
-                    )
+                    .list(**list_kwargs)
                     .execute()
                 )
                 message_ids.extend(m["id"] for m in response.get("messages", []))
                 page_token = response.get("nextPageToken")
                 if not page_token:
+                    break
+                if self.max_emails is not None and len(message_ids) >= self.max_emails:
                     break
         except HttpError as exc:
             raise EmailLoaderFetchError(f"Failed to list Gmail messages: {exc}") from exc
@@ -194,7 +267,8 @@ class GmailLoader(EmailLoader):
 
     def _download_message(self, message_id: str) -> Dict[str, Any]:
         """Download the full raw message payload for a single message ID."""
-        assert self._service is not None
+        if self._service is None:
+            raise EmailLoaderConnectionError("Not connected to Gmail API. Use the context manager.")
         try:
             return (
                 self._service.users()
@@ -289,7 +363,10 @@ class GmailLoader(EmailLoader):
     def _parse_date(date_header: Optional[str], internal_date_ms: Optional[str]) -> datetime:
         if date_header:
             try:
-                return parsedate_to_datetime(date_header)
+                dt = parsedate_to_datetime(date_header)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
             except (TypeError, ValueError):
                 pass
 

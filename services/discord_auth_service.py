@@ -174,17 +174,19 @@ def save_connection(
     granted_permissions: str | None = None,
 ) -> None:
     db = _get_db()
-    db.save_discord_credentials(
-        user_id=user_id,
-        discord_user_id=discord_user_id,
-        guild_id=guild_id,
-        access_token=token_data["access_token"],
-        refresh_token=token_data.get("refresh_token"),
-        token_type=token_data.get("token_type", "Bearer"),
-        scopes=token_data.get("scopes", "identify bot"),
-        expires_at=token_data.get("expires_at"),
-        granted_permissions=granted_permissions,
-    )
+    with db.session_context() as session:
+        db.save_discord_credentials(
+            session,
+            user_id=user_id,
+            discord_user_id=discord_user_id,
+            guild_id=guild_id,
+            access_token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token"),
+            token_type=token_data.get("token_type", "Bearer"),
+            scopes=token_data.get("scopes", "identify bot"),
+            expires_at=token_data.get("expires_at"),
+            granted_permissions=granted_permissions,
+        )
     logger.info("Saved Discord connection for user=%s guild=%s", discord_user_id, guild_id)
 
 

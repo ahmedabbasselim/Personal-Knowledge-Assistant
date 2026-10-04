@@ -9,7 +9,7 @@ TOOLS = """
 You have one tool: `search`. Use it to find relevant content before answering.
 - `query` (required): the search query.
 - `source` (optional): filter by platform — "email", "slack", "discord", "telegram", or "pdf". Omit to search all sources.
-- `num_results` (optional): number of results to return (default 5)."""
+- `num_results` (optional): number of results to return (default 3)."""
 
 RULES = """
 Before responding, you can call `search` tool and ground your answer in the results.

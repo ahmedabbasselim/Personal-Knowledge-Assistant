@@ -1,5 +1,7 @@
 """
 SQLAlchemy ORM models for the application database.
+A SQLAlchemy engine is what holds the connections to the database.
+There is one single engine object for all the code to connect to the same database.
 """
 
 from __future__ import annotations
@@ -66,6 +68,9 @@ class GoogleCredentialRow(CredentialRow):
     )
     google_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     token_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    history_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    backfill_cursor: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sync_label: Mapped[str] = mapped_column(Text, nullable=False, server_default="INBOX")
     user: Mapped[User] = relationship(back_populates="google_credentials")
 
 

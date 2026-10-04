@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.orm import Session
+
 from database.models import DiscordCredentialRow, GoogleCredentialRow, SlackCredentialRow, TelegramCredentialRow, User
 
 
@@ -25,36 +27,61 @@ class BaseDatabase(ABC):
         """Create all application tables if they do not already exist."""
 
     @abstractmethod
-    def find_user_by_id(self, user_id: int) -> Optional[User]:
+    def find_user_by_id(self, session: Session, user_id: int) -> Optional[User]:
         """Return the user row for `user_id`, or None if not found."""
 
     @abstractmethod
-    def user_exists(self, email: str) -> bool:
+    def user_exists(self, session: Session, email: str) -> bool:
         """Return True if a user with the given email exists."""
 
     @abstractmethod
-    def find_user_by_email(self, email: str) -> Optional[User]:
+    def find_user_by_email(self, session: Session, email: str) -> Optional[User]:
         """Return the user row for `email`, or None if not found."""
 
     @abstractmethod
-    def create_user(self, *, name: str, email: str, password_hash: str) -> User:
+    def create_user(self, session: Session, *, name: str, email: str, password_hash: str) -> User:
         """Insert a new user and return the created row."""
 
     @abstractmethod
-    def update_user_profile(self, user_id: int, *, name: str) -> User:
+    def update_user_profile(self, session: Session, user_id: int, *, name: str) -> User:
         """Update mutable profile fields for a user."""
 
     @abstractmethod
-    def find_google_credentials(self, user_id: int) -> Optional[GoogleCredentialRow]:
+    def find_google_credentials(self, session: Session, user_id: int) -> Optional[GoogleCredentialRow]:
         """Return the Google credentials row for a user, or None."""
 
     @abstractmethod
-    def find_user_by_google_id(self, google_id: str) -> Optional[GoogleCredentialRow]:
+    def find_user_by_google_id(self, session: Session, google_id: str) -> Optional[GoogleCredentialRow]:
         """Return the Google credentials row for `google_id`, or None."""
+
+    @abstractmethod
+    def find_all_google_credentials(self, session: Session) -> List[GoogleCredentialRow]:
+        """Return all Google credential rows (one per linked user)."""
+
+    @abstractmethod
+    def update_google_access_token(self, session: Session, user_id: int, access_token: str, token_expiry: Optional[datetime]) -> None:
+        """Persist a refreshed access token and its expiry for a user."""
+
+    @abstractmethod
+    def update_google_history_id(self, session: Session, user_id: int, history_id: str) -> None:
+        """Update the Gmail historyId cursor for a user."""
+
+    @abstractmethod
+    def update_google_backfill_cursor(self, session: Session, user_id: int, cursor: Optional[datetime]) -> None:
+        """Update the backfill cursor for a user. Pass None to mark backfill complete."""
+
+    @abstractmethod
+    def update_google_sync_label(self, session: Session, user_id: int, label: str) -> None:
+        """Update the Gmail label/folder to sync for a user."""
+
+    @abstractmethod
+    def delete_google_credentials(self, session: Session, user_id: int) -> bool:
+        """Delete Google credentials for a user. Returns True if deleted."""
 
     @abstractmethod
     def save_google_credentials(
         self,
+        session: Session,
         user_id: int,
         *,
         google_id: str,
@@ -69,12 +96,13 @@ class BaseDatabase(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def find_slack_credentials(self, team_id: str) -> Optional[SlackCredentialRow]:
+    def find_slack_credentials(self, session: Session, team_id: str) -> Optional[SlackCredentialRow]:
         """Return the Slack credentials row for a team, or None."""
 
     @abstractmethod
     def save_slack_credentials(
         self,
+        session: Session,
         user_id: int,
         team_id: str,
         *,
@@ -87,7 +115,7 @@ class BaseDatabase(ABC):
         """Insert or update Slack credentials for a workspace."""
 
     @abstractmethod
-    def delete_slack_credentials(self, team_id: str) -> bool:
+    def delete_slack_credentials(self, session: Session, team_id: str) -> bool:
         """Delete Slack credentials for a workspace. Returns True if deleted."""
 
     # ------------------------------------------------------------------
@@ -96,17 +124,18 @@ class BaseDatabase(ABC):
 
     @abstractmethod
     def find_discord_credentials(
-        self, discord_user_id: str, guild_id: str
+        self, session: Session, discord_user_id: str, guild_id: str
     ) -> Optional[DiscordCredentialRow]:
         """Return the Discord credentials for a user+guild, or None."""
 
     @abstractmethod
-    def find_discord_credentials_by_guild(self, guild_id: str) -> Optional[DiscordCredentialRow]:
+    def find_discord_credentials_by_guild(self, session: Session, guild_id: str) -> Optional[DiscordCredentialRow]:
         """Return the first Discord credentials for a guild, or None."""
 
     @abstractmethod
     def save_discord_credentials(
         self,
+        session: Session,
         *,
         user_id: int,
         discord_user_id: str,
@@ -121,23 +150,23 @@ class BaseDatabase(ABC):
         """Insert or update Discord credentials for a user+guild."""
 
     @abstractmethod
-    def delete_discord_credentials(self, discord_user_id: str, guild_id: str) -> bool:
+    def delete_discord_credentials(self, session: Session, discord_user_id: str, guild_id: str) -> bool:
         """Delete Discord credentials. Returns True if deleted."""
 
     @abstractmethod
-    def list_discord_guild_ids(self) -> List[str]:
+    def list_discord_guild_ids(self, session: Session) -> List[str]:
         """Return all distinct connected guild IDs."""
 
     @abstractmethod
-    def discord_guild_connection_exists(self, guild_id: str) -> bool:
+    def discord_guild_connection_exists(self, session: Session, guild_id: str) -> bool:
         """Return True if a connection exists for the guild."""
 
     @abstractmethod
-    def discord_guild_owned_by_user(self, user_id: int, guild_id: str) -> bool:
+    def discord_guild_owned_by_user(self, session: Session, user_id: int, guild_id: str) -> bool:
         """Return True if the app user owns a credential for this guild."""
 
     @abstractmethod
-    def list_user_discord_guild_ids(self, user_id: int) -> List[str]:
+    def list_user_discord_guild_ids(self, session: Session, user_id: int) -> List[str]:
         """Return distinct guild IDs connected by the given app user."""
 
     # ------------------------------------------------------------------
@@ -145,12 +174,13 @@ class BaseDatabase(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def find_telegram_credentials(self, phone_number: str) -> Optional[TelegramCredentialRow]:
+    def find_telegram_credentials(self, session: Session, phone_number: str) -> Optional[TelegramCredentialRow]:
         """Return the Telegram credentials for a phone number, or None."""
 
     @abstractmethod
     def save_telegram_credentials(
         self,
+        session: Session,
         user_id: int,
         phone_number: str,
         *,
@@ -160,7 +190,7 @@ class BaseDatabase(ABC):
         """Insert or update Telegram credentials for a phone number."""
 
     @abstractmethod
-    def delete_telegram_credentials(self, phone_number: str) -> bool:
+    def delete_telegram_credentials(self, session: Session, phone_number: str) -> bool:
         """Delete Telegram credentials. Returns True if deleted."""
 
     # ------------------------------------------------------------------
@@ -170,6 +200,7 @@ class BaseDatabase(ABC):
     @abstractmethod
     def save_cleaned_messages(
         self,
+        session: Session,
         messages: List[Dict[str, Any]],
         provider: str = "slack",
     ) -> int:
@@ -178,6 +209,7 @@ class BaseDatabase(ABC):
     @abstractmethod
     def get_stored_messages(
         self,
+        session: Session,
         channel_id: Optional[str] = None,
         provider: str = "slack",
         limit: int = 50,

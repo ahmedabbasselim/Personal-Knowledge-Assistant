@@ -71,15 +71,17 @@ def _get_db():
 def _db_save_token(user_id: int, team_id: str, token_data: dict[str, Any]) -> None:
     try:
         db = _get_db()
-        db.save_slack_credentials(
-            user_id,
-            team_id=team_id,
-            access_token=token_data.get("bot_token", ""),
-            refresh_token=token_data.get("refresh_token"),
-            team_name=token_data.get("team_name"),
-            bot_user_id=token_data.get("bot_user_id"),
-            metadata={k: v for k, v in token_data.items() if k not in ("created_at", "updated_at")},
-        )
+        with db.session_context() as session:
+            db.save_slack_credentials(
+                session,
+                user_id,
+                team_id=team_id,
+                access_token=token_data.get("bot_token", ""),
+                refresh_token=token_data.get("refresh_token"),
+                team_name=token_data.get("team_name"),
+                bot_user_id=token_data.get("bot_user_id"),
+                metadata={k: v for k, v in token_data.items() if k not in ("created_at", "updated_at")},
+            )
         logger.info("Persisted Slack token for team_id=%s to PostgreSQL", team_id)
     except Exception as exc:
         logger.error("Failed to persist Slack token for team_id=%s: %s", team_id, exc)
@@ -88,14 +90,15 @@ def _db_save_token(user_id: int, team_id: str, token_data: dict[str, Any]) -> No
 def _db_get_token(team_id: str) -> Optional[dict[str, Any]]:
     try:
         db = _get_db()
-        cred = db.find_slack_credentials(team_id=team_id)
-        if cred:
-            return {
-                "team_id": team_id,
-                "bot_token": cred.access_token,
-                "team_name": cred.team_name,
-                "bot_user_id": cred.bot_user_id,
-            }
+        with db.session_context() as session:
+            cred = db.find_slack_credentials(session, team_id=team_id)
+            if cred:
+                return {
+                    "team_id": team_id,
+                    "bot_token": cred.access_token,
+                    "team_name": cred.team_name,
+                    "bot_user_id": cred.bot_user_id,
+                }
     except Exception as exc:
         logger.error("Failed to retrieve Slack token for team_id=%s: %s", team_id, exc)
     return None
@@ -250,11 +253,12 @@ def revoke_token(team_id: str) -> None:
     """Revoke and delete the stored Slack token for team_id."""
     try:
         db = _get_db()
-        deleted = db.delete_slack_credentials(team_id=team_id)
-        if deleted:
-            logger.info("Revoked Slack token for team_id=%s", team_id)
-        else:
-            logger.warning("No Slack token found to revoke for team_id=%s", team_id)
+        with db.session_context() as session:
+            deleted = db.delete_slack_credentials(session, team_id=team_id)
+            if deleted:
+                logger.info("Revoked Slack token for team_id=%s", team_id)
+            else:
+                logger.warning("No Slack token found to revoke for team_id=%s", team_id)
     except Exception as exc:
         logger.error("Failed to revoke token for team_id=%s: %s", team_id, exc)
         raise

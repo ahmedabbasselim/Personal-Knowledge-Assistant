@@ -33,9 +33,9 @@ def search(arguments: dict) -> ToolResult:
             success=False,
             error=f"Invalid source: '{source}'. Must be one of: {', '.join(sorted(VALID_SOURCES))}",
         )
-
-    # number of results to return, defaulting to 2 if not specified
-    k = arguments.get("num_results", 2)
+    # Limit the number of results to a maximum of 10.
+    # min() returns the minimum of two values. 
+    k = min(arguments.get("num_results", 3), 5)
     results = store.similarity_search(query, k=k, source_type=source)
 
     if not results:
@@ -68,7 +68,7 @@ search.schema = {
             },
             "num_results": {
                 "type": "integer",
-                "description": "Number of results (default 5).",
+                "description": "Number of results (default 3).",
             },
         },
         "required": ["query"],

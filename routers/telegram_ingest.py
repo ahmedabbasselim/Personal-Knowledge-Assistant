@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
 from services.app_auth_service import get_current_user
 
@@ -35,9 +36,9 @@ router = APIRouter(prefix="/api/v1", tags=["telegram-ingest"])
 _telegram_ingest_status: dict[str, dict] = {}
 
 
-def _verify_phone_ownership(user_id: int, phone_number: str) -> None:
+def _verify_phone_ownership(session: Session, user_id: int, phone_number: str) -> None:
     """Raise 403 if the authenticated user does not own this Telegram connection."""
-    cred = db.find_telegram_credentials(phone_number)
+    cred = db.find_telegram_credentials(session, phone_number)
     if not cred or cred.user_id != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this Telegram account.")
 
@@ -126,7 +127,8 @@ def _run_telegram_ingest(
                     }
                     for m in telegram_messages
                 ]
-                db.save_cleaned_messages(records, provider="telegram")
+                with db.session_context() as bg_session:
+                    db.save_cleaned_messages(bg_session, records, provider="telegram")
             except Exception as exc:
                 logger.warning("Failed to persist cleaned messages to DB: %s", exc)
 
@@ -174,9 +176,10 @@ def ingest_telegram(
     dialog_limit: int = Query(default=20, ge=1, le=100, description="Max number of chats to scan"),
     save_to_db: bool = Query(default=True, description="Persist cleaned messages to PostgreSQL"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Fetch Telegram messages, clean, deduplicate, and run the RAG pipeline in the background."""
-    _verify_phone_ownership(user.id, phone_number)
+    _verify_phone_ownership(session, user.id, phone_number)
     background_tasks.add_task(
         _run_telegram_ingest, phone_number, chat_id, limit_per_chat, dialog_limit, save_to_db
     )
@@ -195,9 +198,10 @@ def ingest_telegram(
 def telegram_ingest_status(
     phone_number: str = Query(..., description="Phone number"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Return the current Telegram ingestion progress."""
-    _verify_phone_ownership(user.id, phone_number)
+    _verify_phone_ownership(session, user.id, phone_number)
     status = _telegram_ingest_status.get(phone_number)
     if not status:
         return {"state": "idle"}
@@ -212,9 +216,10 @@ async def list_telegram_chats(
     phone_number: str = Query(..., description="Phone number of the authenticated Telegram account"),
     limit: int = Query(default=20, ge=1, le=100, description="Max dialogs to return"),
     user=Depends(get_current_user),
+    session: Session = Depends(db.get_session),
 ):
     """Lists the most recently active Telegram chats."""
-    _verify_phone_ownership(user.id, phone_number)
+    _verify_phone_ownership(session, user.id, phone_number)
     try:
         loader = get_telegram_loader(phone_number)
         async with loader:

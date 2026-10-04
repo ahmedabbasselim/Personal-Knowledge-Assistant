@@ -19,8 +19,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from services.app_auth_service import get_current_user
+from initializer import db
 from config import settings
 from services.telegram_auth_service import (
     send_code,
@@ -98,11 +100,9 @@ def telegram_health():
 
 
 @router.delete("/revoke/{phone_number}", summary="Revoke stored Telegram session")
-def telegram_revoke(phone_number: str, user=Depends(get_current_user)):
+def telegram_revoke(phone_number: str, user=Depends(get_current_user), session: Session = Depends(db.get_session)):
     """Delete the stored Telegram session for a phone number."""
-    from initializer import db
-
-    deleted = db.delete_telegram_credentials(phone_number)
+    deleted = db.delete_telegram_credentials(session, phone_number)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No session found for this phone number.")
     return {"status": "revoked", "phone_number": phone_number}

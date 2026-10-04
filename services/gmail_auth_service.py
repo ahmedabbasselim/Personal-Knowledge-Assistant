@@ -98,7 +98,7 @@ class AuthService:
     # Callback / authentication
     # ------------------------------------------------------------------
 
-    def authenticate(self, code: str, state: str) -> User:
+    def authenticate(self, session, code: str, state: str) -> User:
         """
         Full callback handling: validate state, exchange the code, fetch the
         Google profile, and link credentials to the user. Returns the user.
@@ -129,7 +129,7 @@ class AuthService:
 
         credentials = flow.credentials
         profile = self._get_profile(credentials)
-        return self._save_user(user_id, profile, credentials)
+        return self._save_user(session, user_id, profile, credentials)
 
     # ------------------------------------------------------------------
     # Token refresh
@@ -167,7 +167,7 @@ class AuthService:
             raise OAuthExchangeError(f"Failed to fetch Google profile: {exc}") from exc
         return profile
 
-    def _save_user(self, user_id: int, profile: dict[str, Any], credentials: Credentials) -> User:
+    def _save_user(self, session, user_id: int, profile: dict[str, Any], credentials: Credentials) -> User:
         """
         Link Google credentials to the logged-in user identified by `user_id`.
         """
@@ -186,6 +186,7 @@ class AuthService:
 
         try:
             self.db.save_google_credentials(
+                session,
                 user_id,
                 google_id=google_id,
                 access_token=access_token,
@@ -195,4 +196,4 @@ class AuthService:
         except ValueError as exc:
             raise OAuthExchangeError(str(exc)) from exc
 
-        return self.db.find_user_by_id(user_id)
+        return self.db.find_user_by_id(session, user_id)

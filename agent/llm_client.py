@@ -14,6 +14,9 @@ from groq import Groq, GroqError
 
 from config import settings
 from agent.tool_executer import TOOL_REGISTRY
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 
 class LLMResponseError(Exception):
@@ -75,9 +78,12 @@ def call_llm(messages: list[dict], system_prompt: str) -> dict:
 
     try:
         completion = client.chat.completions.create(**kwargs)
+        logging.info("Groq response: %s", completion.model_dump_json())
     except GroqError as e:
         raise LLMResponseError(f"Groq request failed: {e}") from e
 
+    if not completion.choices:
+        raise LLMResponseError("Groq returned no choices.")
     message = completion.choices[0].message
     if not message.content and not message.tool_calls:
         raise LLMResponseError("Groq returned an empty response.")

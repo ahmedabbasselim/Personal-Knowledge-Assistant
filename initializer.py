@@ -16,3 +16,5 @@ embedder = SentenceTransformerEmbedder()
 store = ChromaVectorStore(embedder, settings.VECTOR_STORE_DIR, "knowledge")
 chunker = LangChainChunker()
 dispatcher = CleanerDispatcher()
+
+
